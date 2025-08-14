@@ -56,7 +56,6 @@ async def onnx_input_names(model_path: str) -> List[str]:
         ONNX_SESSIONS[model_path] = ort.InferenceSession(
             model_path,
             providers=[
-                'TensorrtExecutionProvider',
                 'CUDAExecutionProvider',
                 "DmlExecutionProvider",
                 "CoreMLExecutionProvider",
@@ -125,7 +124,6 @@ async def inference(body: Dict):
         ONNX_SESSIONS[model_path] = ort.InferenceSession(
             model_path,
             providers=[
-                'TensorrtExecutionProvider',
                 'CUDAExecutionProvider',
                 "DmlExecutionProvider",
                 "CoreMLExecutionProvider",
@@ -177,3 +175,4 @@ if __name__ == "__main__":
         log_level="info",
         # reload=True,
     )
+
