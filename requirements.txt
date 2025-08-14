@@ -1,5 +1,5 @@
 numpy
 onnxruntime-gpu
-onnxruntime-directml
+#windows only onnxruntime-directml
 fastapi
 uvicorn[standard]
