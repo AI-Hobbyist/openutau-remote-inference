@@ -116,6 +116,7 @@ python main.py [-d <模型根目录>] [--host 0.0.0.0] [--port 7889] [--max_sess
 | `GET` | `/exists?model_path={path}` | 检查模型文件是否存在 |
 | `GET` | `/registry` | 获取完整的模型注册信息（所有歌手、依赖） |
 | `GET` | `/singer_info?singer_name={name}` | 获取指定歌手的详细模型信息 |
+| `GET` | `/check_variance?singer={name}` | 检查方差子模型推理端点是否可达 |
 
 ### ONNX 元信息
 
@@ -135,6 +136,7 @@ python main.py [-d <模型根目录>] [--host 0.0.0.0] [--port 7889] [--max_sess
 | `POST` | `/inference_vocoder` | **声码器推理** — 支持 ONNX 和 JIT (DDSP) 声码器 |
 | `POST` | `/inference_vocoder_batch` | **批量声码器推理** — 支持 ONNX 和 JIT，一次推理多个片段 |
 | `POST` | `/inference_variance` | **方差子模型推理** — 自动串联 linguistic encoder → variance predictor |
+| `POST` | `/inference_pitch` | **音高子模型推理** — 自动串联 linguistic encoder → pitch predictor |
 | `POST` | `/inference_dependency` | **依赖模块推理** — GAME / RMVPE 等依赖模型 |
 | `POST` | `/inference_chain` | **链式推理** — 自动串联 linguistic → dur/pitch/variance 多步推理 |
 
@@ -173,6 +175,44 @@ python main.py [-d <模型根目录>] [--host 0.0.0.0] [--port 7889] [--max_sess
 }
 ```
 
+### 方差子模型推理格式（`/inference_variance`）
+
+方差子模型自动串联 `dsvariance/` 目录下的 linguistic encoder → variance predictor 两步推理：
+
+```json
+{
+    "singer": "fu2_ning2_na4",
+    "inputs": {
+        "tokens":     { "type": "tensor(int64)",  "shape": [1, N], "int64_data": [...] },
+        "ph_dur":     { "type": "tensor(float)",  "shape": [1, N], "float_data": [...] },
+        "pitch":      { "type": "tensor(float)",  "shape": [1, M], "float_data": [...] },
+        "languages":  { "type": "tensor(int64)",  "shape": [1, N], "int64_data": [...] },
+        "steps":      { "type": "tensor(int32)",  "shape": [1],    "int32_data": [10] }
+    }
+}
+```
+
+> 缺失的方差子模型输入（如 `breathiness`、`voicing`、`tension` 等）会自动零填充或使用默认值；`retake` 输入默认 `true`（全部重新预测）。
+
+### 音高子模型推理格式（`/inference_pitch`）
+
+音高子模型自动串联 `dspitch/` 目录下的 linguistic encoder → pitch predictor 两步推理：
+
+```json
+{
+    "singer": "fu2_ning2_na4",
+    "inputs": {
+        "tokens":     { "type": "tensor(int64)",  "shape": [1, N], "int64_data": [...] },
+        "ph_dur":     { "type": "tensor(float)",  "shape": [1, N], "float_data": [...] },
+        "note_midi":  { "type": "tensor(float)",  "shape": [1, N], "float_data": [...] },
+        "languages":  { "type": "tensor(int64)",  "shape": [1, N], "int64_data": [...] },
+        "steps":      { "type": "tensor(int32)",  "shape": [1],    "int32_data": [10] }
+    }
+}
+```
+
+> `expr` 输入默认值为 `1.0`（中性表达值），`retake` 默认 `true`，其他缺失 bool 输入默认 `false`。
+
 ### 链式推理格式
 
 ```json
@@ -187,6 +227,36 @@ python main.py [-d <模型根目录>] [--host 0.0.0.0] [--port 7889] [--max_sess
     }
 }
 ```
+
+---
+
+### 资源管理端点
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| `POST` | `/release` | **释放指定模型** — 释放当前会话中缓存的指定 ONNX/JIT 模型 |
+| `POST` | `/release_session` | **释放当前会话** — 释放当前会话的所有模型缓存 |
+| `POST` | `/release_all` | **释放所有会话** — 释放所有客户端会话的模型缓存（管理用） |
+| `GET` | `/session_available` | **检查会话可用性** — 检查当前 session 是否可用（不会创建新 session） |
+| `GET` | `/sessions` | **列出活跃会话** — 查看当前所有活跃会话列表 |
+| `POST` | `/rescan` | **重新扫描** — 重新扫描 `Singers/` 和 `Dependencies/` 目录，更新注册信息 |
+
+#### 资源管理请求示例
+
+```json
+// POST /release
+{ "model_path": "Singers/fu2_ning2_na4/fu2_ning2_na4_aco.onnx" }
+
+// POST /release_session  — 无需请求体
+// POST /release_all      — 无需请求体
+
+// GET /session_available — 通过 X-Session-Id 头或 session_id 查询参数
+// GET /sessions          — 无需参数
+
+// POST /rescan           — 无需请求体
+```
+
+> **会话隔离**: 每个客户端通过 `X-Session-Id` 请求头（或 `session_id` 查询参数）维持独立会话。会话内模型缓存复用，互不干扰。超时（默认 1 小时）自动释放。请求前建议先调用 `GET /session_available` 检查服务器容量，避免推理被拒绝。
 
 ---
 
@@ -248,11 +318,15 @@ openutau-remote-inference/
 │   ├── __init__.py
 │   ├── dsconfig_parser.py      # 配置文件解析器（dsconfig.yaml / vocoder.yaml / oudep.yaml）
 │   ├── model_registry.py       # 模型注册与目录扫描（自动发现歌手和依赖）
-│   └── nvSTFT.py               # STFT 工具函数
-├── docs/
-│   └── ONNX_EXPORT_ANALYSIS.md # ONNX 导出与远程推理适配分析文档
-├── requirements-cuda.txt       # NVIDIA GPU 依赖
-├── requirements-dml.txt        # AMD GPU 依赖
+│   └── nvSTFT.py               # STFT 工具函数（梅尔频谱提取、音频加载）
+├── Singers/                    # 歌手模型目录（用户自行放置）
+├── Dependencies/               # 依赖模块目录（用户自行放置）
+│   ├── game/                   # GAME MIDI 提取器
+│   └── rmvpe/                  # RMVPE 音高提取
+├── docs/                       # 文档目录（如不存在则忽略）
+│   └── ONNX_EXPORT_ANALYSIS.md
+├── requirements-cuda.txt       # NVIDIA GPU (CUDA) 依赖
+├── requirements-dml.txt        # AMD GPU (DirectML) 依赖
 ├── LICENSE                     # Apache 2.0
 └── README.md
 ```
@@ -292,6 +366,67 @@ num_mel_bins: 128
 pitch_controllable: true
 model_type: onnx             # 可选: onnx / jit
 ```
+
+### `oudep.yaml`（依赖声明配置）
+
+放在 `Dependencies/{DepName}/` 目录下，声明依赖模块的元信息：
+
+```yaml
+id: game          # 依赖唯一标识
+version: 1.0.0    # 版本号
+name: GAME        # 显示名称
+description: GAME MIDI提取器
+class: game       # Python 类名
+```
+
+### `character.yaml`（歌手元数据）
+
+标准的 OpenUtau 歌手元数据文件，示例：
+
+```yaml
+name: 覆面泣吶          # 歌手中文名
+image: character.png   # 头像
+portrait: portrait.png # 立绘
+author: xxx            # 作者
+---
+``` 
+
+> `character.yaml` 是服务器自动识别歌手目录的最高优先级标志。如果不存在，服务器会通过 `dsconfig.yaml` + `.onnx` 文件的存在来识别。
+
+---
+
+## :bulb: 输入校验与自动填充机制
+
+### 声学模型输入校验
+
+推理时会根据 `dsconfig.yaml` 配置自动校验输入：
+
+| 输入名称 | 类型 | 必需？ | 关联配置项 |
+|----------|------|--------|-----------|
+| `tokens` | `tensor(int64)` | ✅ 必需 | — |
+| `durations` | `tensor(int64)` | ✅ 必需 | — |
+| `f0` | `tensor(float)` | ✅ 必需 | — |
+| `gender` | `tensor(float)` | ❌ 可选 | `use_key_shift_embed` |
+| `velocity` | `tensor(float)` | ❌ 可选 | `use_speed_embed` |
+| `breathiness` | `tensor(float)` | ❌ 可选 | `use_breathiness_embed` |
+| `voicing` | `tensor(float)` | ❌ 可选 | `use_voicing_embed` |
+| `tension` | `tensor(float)` | ❌ 可选 | `use_tension_embed` |
+| `spk_embed` | `tensor(float)` | ❌ 可选 | 多说话人 |
+| `languages` | `tensor(int64)` | ❌ 可选 | `use_lang_id` |
+
+- 未提供的可选输入 **自动零填充**，无需客户端额外处理
+- 如果提供了可选输入但 `dsconfig.yaml` 中对应开关为 `false`，会记录警告但不阻止推理
+
+### 子模型推理自动串联
+
+`/inference_variance` 和 `/inference_pitch` 端点会自动完成两步串联推理：
+
+1. **Linguistic Encoder** — 将音素序列编码为隐藏表示 `encoder_out`
+2. **Predictor** — 基于 `encoder_out` 和其他输入预测目标输出
+
+此过程对客户端完全透明，客户端只需提供原始输入即可。
+
+---
 
 ## :hamburger: 动机
 
