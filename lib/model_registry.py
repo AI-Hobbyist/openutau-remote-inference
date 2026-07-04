@@ -158,17 +158,43 @@ def scan_singers(root_dir: Path) -> Dict[str, SingerInfo]:
     return singers
 
 
+def _is_singer_dir(folder: Path) -> bool:
+    """判断一个目录是否为歌手模型目录（含有歌手特征文件）"""
+    if not folder.is_dir():
+        return False
+    # 排除已知的子模型/非歌手目录名
+    if folder.name in ("dsdur", "dspitch", "dsvariance", "dsvocoder", "backup"):
+        return False
+    # OpenUtau 歌手元数据文件
+    if (folder / "character.yaml").exists() or (folder / "character.txt").exists():
+        return True
+    # 含有 dsconfig.yaml 且根目录下含有 .onnx 模型文件
+    if (folder / "dsconfig.yaml").exists():
+        if any(f.is_file() and f.suffix == ".onnx" for f in folder.iterdir()):
+            return True
+    return False
+
+
 def _find_actual_singer_dir(singer_folder: Path) -> Optional[Path]:
-    """找到实际的歌手模型目录"""
-    # 查找子目录下的第一层子目录
-    sub_dirs = [d for d in singer_folder.iterdir() if d.is_dir() and d.name != "backup"]
-    if sub_dirs:
-        # Singers/{Name}-DiffSinger/{Name}/ 结构
-        # 选择与父文件夹名最匹配的子目录
-        for d in sub_dirs:
-            if d.name.lower() in singer_folder.name.lower():
-                return d
-        return sub_dirs[0]  # 取第一个子目录
+    """找到实际的歌手模型目录，兼容各种嵌套层级
+
+    支持以下目录结构:
+      1) Singers/{Name}/                           — 平铺结构，无嵌套
+      2) Singers/{Name}-DiffSinger/{Name}/         — 一层嵌套
+      3) Singers/Category/{Name}-DiffSinger/{Name}/ — 多层嵌套
+    """
+    # 情况1：当前目录本身就是歌手目录
+    if _is_singer_dir(singer_folder):
+        return singer_folder
+
+    # 情况2：递归查找子目录（兼容任意嵌套层级）
+    for child in sorted(singer_folder.iterdir()):
+        if not child.is_dir() or child.name == "backup":
+            continue
+        result = _find_actual_singer_dir(child)
+        if result is not None:
+            return result
+
     return None
 
 

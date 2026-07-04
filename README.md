@@ -1,6 +1,6 @@
 # :satisfied: OpenUtau Remote Inference Server v2
 
-> 基于 FastAPI 的 DiffSinger 远程推理服务器，支持声学模型、方差子模型（时长/音高/音色）、声码器（ONNX/JIT）的远程推理。
+> 基于 FastAPI 的 DiffSinger 远程推理服务器，支持声学模型、唱法子模型（气声(BREC)/力度(TENC)/发声(VOIC)/音素时长预测等等）、声码器（ONNX/JIT）的远程推理。
 
 将 OpenUtau 的 DiffSinger 模型部署到远程 GPU 服务器上推理，本地 OpenUtau 仅作为前端使用。需要配合 [修改版 OpenUtau](https://github.com/AI-Hobbyist/OpenUtau/tree/diffs-remote-new) 使用。
 
@@ -24,23 +24,69 @@ pip install -r requirements-dml.txt
 
 ### 2. 准备模型
 
-在服务器上创建模型根目录，复制 `Singers/` 中的模型文件（保持相对目录结构）。例如：
+在服务器上创建模型根目录，复制 `Singers/` 中的模型文件（保持相对目录结构）。服务器会自动识别以下三种目录结构：
+
+### 目录结构示例
+
+**方案 A — 平铺结构（推荐）**：歌手目录直接放在 `Singers/` 下，所有模型文件在根目录中：
 
 ```
 /path/to/models/
 ├── Singers/
-│   └── {SingerName}-DiffSinger/
-│       └── {SingerName}/
-│           ├── dsconfig.yaml
-│           ├── acoustic.onnx
-│           ├── dsdur/              # 时长子模型
-│           ├── dspitch/            # 音高子模型
-│           ├── dsvariance/         # 音色方差子模型
-│           └── dsvocoder/          # 声码器
+│   ├── fu2_ning2_na4/                  # ← 直接就是歌手目录
+│   │   ├── character.yaml              # 歌手元数据
+│   │   ├── dsconfig.yaml               # 声学模型配置
+│   │   ├── fu2_ning2_na4_aco.onnx      # 声学模型
+│   │   ├── dsdur/                      # 时长子模型
+│   │   │   ├── dsconfig.yaml
+│   │   │   └── fd_dur.fu2_ning2_na4.dur.onnx
+│   │   ├── dspitch/                    # 音高子模型
+│   │   ├── dsvariance/                 # 音色方差子模型
+│   │   └── dsvocoder/                  # 声码器
+│   │       └── vocoder.yaml
+│   └── my_singer2/
+│       ├── character.yaml
+│       ├── dsconfig.yaml
+│       └── ...
 └── Dependencies/
-    ├── game/                       # GAME MIDI 提取器
-    └── rmvpe/                      # RMVPE 音高提取
+    ├── game/                           # GAME MIDI 提取器
+    └── rmvpe/                          # RMVPE 音高提取
 ```
+
+**方案 B — OpenUtau 标准嵌套**：`Singers/{Name}-DiffSinger/{Name}/` 形式：
+
+```
+/path/to/models/
+└── Singers/
+    └── fu2_ning2_na4-DiffSinger/       # OpenUtau 导出时的外层包装
+        └── fu2_ning2_na4/              # ← 实际歌手目录
+            ├── character.yaml
+            ├── dsconfig.yaml
+            ├── fu2_ning2_na4_aco.onnx
+            ├── dsdur/
+            ├── dspitch/
+            ├── dsvariance/
+            └── dsvocoder/
+```
+
+**方案 C — 多级分类嵌套**：按语言、类型等分类组织：
+
+```
+/path/to/models/
+└── Singers/
+    ├── Chinese/
+    │   └── fu2_ning2_na4-DiffSinger/
+    │       └── fu2_ning2_na4/          # ← 实际歌手目录
+    │           ├── character.yaml
+    │           └── ...
+    └── Japanese/
+        └── miku_DiffSinger/
+            └── miku/                   # ← 实际歌手目录
+                ├── character.yaml
+                └── ...
+```
+
+> 服务器会自动递归搜索，**无论嵌套多少层**，只要目录内含 `character.yaml`（或 `character.txt`）或 `dsconfig.yaml` + `.onnx` 文件，即可被正确识别为歌手目录。
 
 ### 3. 启动服务器
 
@@ -148,10 +194,20 @@ python main.py [-d <模型根目录>] [--host 0.0.0.0] [--port 7889] [--max_sess
 
 ### 自动模型发现与注册
 
-启动时自动扫描 `Singers/` 和 `Dependencies/` 目录，识别所有声库和依赖模块，支持两种目录结构：
+启动时自动扫描 `Singers/` 和 `Dependencies/` 目录，递归识别所有声库和依赖模块。根据目录特征自动判断歌手目录：
 
-- `Singers/{Name}-DiffSinger/{Name}/` — OpenUtau 标准结构
-- `Singers/{Name}/` — 简化结构
+| 特征 | 说明 |
+|------|------|
+| `character.yaml` / `character.txt` | OpenUtau 歌手元数据，最可靠的识别标志 |
+| `dsconfig.yaml` + `.onnx` 模型文件 | 声学模型配置 + 模型文件同时存在 |
+
+支持任意嵌套层级的目录结构：
+
+- `Singers/{Name}/` — **平铺结构**（推荐）
+- `Singers/{Name}-DiffSinger/{Name}/` — **一层嵌套**（OpenUtau 标准）
+- `Singers/Category/{Name}-DiffSinger/{Name}/` — **多层嵌套**（分类组织）
+
+> 子模型目录（`dsdur`、`dspitch`、`dsvariance`、`dsvocoder`）会被自动排除，不会误识别为歌手。
 
 通过 `GET /registry` 可查看完整的注册信息。
 
