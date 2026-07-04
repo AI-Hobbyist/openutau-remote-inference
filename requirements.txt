@@ -1,5 +1,0 @@
-numpy
-onnxruntime-gpu
-#windows only onnxruntime-directml
-fastapi
-uvicorn[standard]
