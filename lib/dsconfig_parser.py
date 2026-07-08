@@ -1,13 +1,13 @@
-"""
-dsconfig_parser.py — DiffSinger 配置文件解析器
+﻿"""DiffSinger configuration parsers."""
 
-解析 OpenUtau DiffSinger 模型的各类 YAML/JSON 配置文件：
-  - dsconfig.yaml    (声学模型/方差子模型配置)
-  - vocoder.yaml     (声码器配置)
-  - oudep.yaml       (依赖声明)
-  - character.yaml   (歌手元数据)
-  - config.json      (依赖详细配置)
-"""
+
+
+
+
+
+
+
+
 
 from __future__ import annotations
 
@@ -20,18 +20,18 @@ import yaml
 
 
 # ====================================================================
-# 声学模型配置 (dsconfig.yaml — 歌手根目录)
+# 澹板妯″瀷閰嶇疆 (dsconfig.yaml 鈥?姝屾墜鏍圭洰褰?
 # ====================================================================
 
 @dataclass
 class AcousticConfig:
-    """歌手主 dsconfig.yaml 解析结果"""
-    # 模型文件
+    """Acoustic dsconfig.yaml data."""
+    # 妯″瀷鏂囦欢
     acoustic: str = ""
     phonemes: str = ""
     languages: str = ""
 
-    # 基础参数
+    # 鍩虹鍙傛暟
     hidden_size: int = 256
     sample_rate: int = 44100
     hop_size: int = 512
@@ -43,32 +43,32 @@ class AcousticConfig:
     mel_base: str = "e"
     mel_scale: str = "slaney"
 
-    # 声音特征开关
-    use_key_shift_embed: bool = False   # gender 输入
-    use_speed_embed: bool = False       # velocity 输入
+    # 澹伴煶鐗瑰緛寮€鍏?
+    use_key_shift_embed: bool = False   # gender 杈撳叆
+    use_speed_embed: bool = False       # velocity 杈撳叆
     use_breathiness_embed: bool = False
     use_voicing_embed: bool = False
     use_tension_embed: bool = False
     use_energy_embed: bool = False
     use_lang_id: bool = False
 
-    # 扩散相关
+    # 鎵╂暎鐩稿叧
     use_variable_depth: bool = False
     max_depth: float = 0.0
     use_continuous_acceleration: bool = True
 
-    # 声码器引用
+    # 澹扮爜鍣ㄥ紩鐢?
     vocoder: str = ""
 
-    # 多说话人
+    # 澶氳璇濅汉
     speakers: List[str] = field(default_factory=list)
 
-    # 原始完整字典
+    # 鍘熷瀹屾暣瀛楀吀
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_path(cls, path: Path) -> "AcousticConfig":
-        """从 dsconfig.yaml 文件路径加载"""
+        """Load an acoustic config from a dsconfig.yaml file."""
         if not path.exists():
             return cls()
         with open(path, "r", encoding="utf-8") as f:
@@ -108,13 +108,13 @@ class AcousticConfig:
 
 
 # ====================================================================
-# 方差子模型配置 (dsconfig.yaml — dsdur/dspitch/dsvariance 目录)
+# 鏂瑰樊瀛愭ā鍨嬮厤缃?(dsconfig.yaml 鈥?dsdur/dspitch/dsvariance 鐩綍)
 # ====================================================================
 
 @dataclass
 class VarianceSubConfig:
-    """方差子模型 dsconfig.yaml 解析结果"""
-    # 模型文件
+    """Variance sub-model dsconfig.yaml data."""
+    # 妯″瀷鏂囦欢
     linguistic: str = ""
     dur: str = ""
     pitch: str = ""
@@ -122,28 +122,28 @@ class VarianceSubConfig:
     phonemes: str = ""
     languages: str = ""
 
-    # 基础参数
+    # 鍩虹鍙傛暟
     hidden_size: int = 256
     sample_rate: int = 44100
     hop_size: int = 512
 
-    # 功能开关
+    # 鍔熻兘寮€鍏?
     predict_dur: bool = False
     use_expr: bool = False
     use_note_rest: bool = False
     use_lang_id: bool = False
     use_continuous_acceleration: bool = True
 
-    # 方差预测列表
+    # 鏂瑰樊棰勬祴鍒楄〃
     predict_energy: bool = False
     predict_breathiness: bool = False
     predict_voicing: bool = False
     predict_tension: bool = False
 
-    # 多说话人
+    # 澶氳璇濅汉
     speakers: List[str] = field(default_factory=list)
 
-    # 原始完整字典
+    # 鍘熷瀹屾暣瀛楀吀
     raw: Dict[str, Any] = field(default_factory=dict)
 
     @classmethod
@@ -181,12 +181,12 @@ class VarianceSubConfig:
 
 
 # ====================================================================
-# 声码器配置 (vocoder.yaml)
+# 澹扮爜鍣ㄩ厤缃?(vocoder.yaml)
 # ====================================================================
 
 @dataclass
 class VocoderConfig:
-    """vocoder.yaml 解析结果"""
+    """Vocoder config data."""
     name: str = ""
     model: str = ""
     model_type: str = "onnx"  # onnx / jit
@@ -236,69 +236,30 @@ class VocoderConfig:
 
 
 # ====================================================================
-# 依赖声明 (oudep.yaml)
-# ====================================================================
-
-@dataclass
-class DependencyConfig:
-    """oudep.yaml 解析结果"""
-    id: str = ""
-    version: str = ""
-    name: str = ""
-    description: str = ""
-    class_name: str = ""
-
-    raw: Dict[str, Any] = field(default_factory=dict)
-
-    @classmethod
-    def from_path(cls, path: Path) -> "DependencyConfig":
-        if not path.exists():
-            return cls()
-        with open(path, "r", encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        return cls.from_dict(data)
-
-    @classmethod
-    def from_dict(cls, data: dict) -> "DependencyConfig":
-        return cls(
-            id=data.get("id", ""),
-            version=data.get("version", ""),
-            name=data.get("name", ""),
-            description=data.get("description", ""),
-            class_name=data.get("class", ""),
-            raw=data,
-        )
-
-
-# ====================================================================
-# 模型类型枚举
+# 妯″瀷绫诲瀷鏋氫妇
 # ====================================================================
 
 class ModelType:
-    """DiffSinger 模型类型"""
-    ACOUSTIC = "acoustic"       # 声学模型 (FS2 + Diffusion)
-    LINGUISTIC = "linguistic"   # 语言编码器
-    DURATION = "dur"            # 时长预测器
-    PITCH = "pitch"             # 音高预测器
-    VARIANCE = "variance"       # 多方差预测器
-    VOCODER = "vocoder"         # 声码器
-    DEPENDENCY = "dependency"   # 依赖 (GAME/RMVPE)
+    """DiffSinger model type names."""
+    ACOUSTIC = "acoustic"       # 澹板妯″瀷 (FS2 + Diffusion)
+    LINGUISTIC = "linguistic"   # 璇█缂栫爜鍣?
+    DURATION = "dur"            # 鏃堕暱棰勬祴鍣?
+    PITCH = "pitch"             # 闊抽珮棰勬祴鍣?
+    VARIANCE = "variance"       # 澶氭柟宸娴嬪櫒
+    VOCODER = "vocoder"         # 澹扮爜鍣?
 
     @classmethod
     def infer_from_path(cls, model_path: Path) -> str:
-        """根据文件名推测模型类型"""
+        """Infer model type from a model path."""
         name = model_path.name.lower()
         parent_name = model_path.parent.name.lower()
 
-        # Dependencies 目录下的属于依赖
-        if "dependencies" in model_path.parts:
-            return cls.DEPENDENCY
 
-        # dsvocoder 目录下的
+        # dsvocoder 鐩綍涓嬬殑
         if parent_name == "dsvocoder":
             return cls.VOCODER
 
-        # 方差子模型
+        # 鏂瑰樊瀛愭ā鍨?
         if parent_name in ("dsdur",):
             if ".linguistic." in name:
                 return cls.LINGUISTIC
@@ -312,7 +273,7 @@ class ModelType:
                 return cls.LINGUISTIC
             return cls.VARIANCE
 
-        # 声学主模型 (根目录下的 .onnx)
+        # 澹板涓绘ā鍨?(鏍圭洰褰曚笅鐨?.onnx)
         if "_aco." in name:
             return cls.ACOUSTIC
 
@@ -320,7 +281,7 @@ class ModelType:
 
     @classmethod
     def sub_model_dir(cls, model_type: str) -> str:
-        """模型类型对应的子目录名"""
+        """Return the subdirectory name for a model type."""
         mapping = {
             cls.DURATION: "dsdur",
             cls.PITCH: "dspitch",
@@ -331,11 +292,11 @@ class ModelType:
 
 
 # ====================================================================
-# 便捷解析函数
+# 渚挎嵎瑙ｆ瀽鍑芥暟
 # ====================================================================
 
 def parse_model_config(base_dir: Path) -> Optional[AcousticConfig]:
-    """尝试在 base_dir 下查找并解析 dsconfig.yaml (声学主配置)"""
+    """Find and parse acoustic dsconfig.yaml."""
     candidates = [
         base_dir / "dsconfig.yaml",
         base_dir.parent / "dsconfig.yaml",
@@ -347,23 +308,16 @@ def parse_model_config(base_dir: Path) -> Optional[AcousticConfig]:
 
 
 def parse_vocoder_config(vocoder_dir: Path) -> Optional[VocoderConfig]:
-    """在声码器目录下查找并解析 vocoder.yaml"""
+    """Find and parse vocoder.yaml."""
     path = vocoder_dir / "vocoder.yaml"
     if path.exists():
         return VocoderConfig.from_path(path)
     return None
 
 
-def parse_dependency_config(dep_dir: Path) -> Optional[DependencyConfig]:
-    """在依赖目录下查找并解析 oudep.yaml"""
-    path = dep_dir / "oudep.yaml"
-    if path.exists():
-        return DependencyConfig.from_path(path)
-    return None
-
 
 def parse_sub_model_config(sub_dir: Path) -> Optional[VarianceSubConfig]:
-    """在方差子模型目录 (dsdur/dspitch/dsvariance) 下解析 dsconfig.yaml"""
+    """Find and parse sub-model dsconfig.yaml."""
     path = sub_dir / "dsconfig.yaml"
     if path.exists():
         return VarianceSubConfig.from_path(path)

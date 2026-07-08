@@ -20,6 +20,7 @@ import torch
 import uvicorn
 import yaml
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from lib.dsconfig_parser import (
     AcousticConfig,
@@ -118,12 +119,14 @@ SESSION_MGR = SessionManager(max_sessions=10)
 
 parser = argparse.ArgumentParser()
 parser.add_argument("-d", "--root_dir", type=str, default=str(Path(__file__).parent),
-                    help="root directory containing models (Singers/, Dependencies/)")
+                    help="root directory containing models (Singers/)")
 parser.add_argument("--host", type=str, default="0.0.0.0", help="binding host")
 parser.add_argument("--port", type=int, default=7889, help="binding port")
 parser.add_argument("--max_sessions", type=int, default=10, help="max concurrent client sessions")
 parser.add_argument("--precision", type=str, default="fp32", choices=["fp32", "fp16", "int8"],
                     help="inference precision: fp32 (default), fp16, or int8 (weights not converted)")
+parser.add_argument("--require_token", action="store_true", help="require Bearer token authentication")
+parser.add_argument("--access_token", type=str, default="", help="Bearer token for authenticated requests")
 args = parser.parse_args()
 args.root_dir = Path(args.root_dir).resolve()
 SESSION_MGR.max_sessions = args.max_sessions
@@ -136,6 +139,16 @@ LOGGER.info(f"Inference precision: {args.precision} (weights kept as-is)")
 # ====================================================================
 
 app = FastAPI(title="OpenUtau Remote Inference Server", version="2.0.0")
+
+
+@app.middleware("http")
+async def token_auth_middleware(request: Request, call_next):
+    if args.require_token and request.url.path not in {"/ping", "/node_info"}:
+        expected = f"Bearer {args.access_token}"
+        actual = request.headers.get("Authorization", "")
+        if not args.access_token or actual != expected:
+            return JSONResponse(status_code=401, content={"detail": "Invalid or missing access token"})
+    return await call_next(request)
 
 
 @app.on_event("startup")
@@ -575,6 +588,45 @@ async def ping() -> str:
     return "pong"
 
 
+@app.get("/node_info")
+async def node_info() -> dict:
+    return {
+        "status": "ok",
+        "version": app.version,
+        "require_token": bool(args.require_token),
+        "max_sessions": SESSION_MGR.max_sessions,
+        "active_count": SESSION_MGR.active_count,
+        "precision": args.precision,
+        "capabilities": ["acoustic", "variance", "pitch", "vocoder", "vocoder_batch"],
+    }
+
+
+@app.get("/singer_capabilities")
+async def singer_capabilities(singer_name: str) -> dict:
+    registry = _ensure_registry()
+    from lib.model_registry import find_singer_by_name
+    sinfo = find_singer_by_name(registry, singer_name)
+    if sinfo is None:
+        return {
+            "exists": False,
+            "singer": singer_name,
+            "models": {},
+        }
+    return {
+        "exists": True,
+        "singer": sinfo.name,
+        "display_name": sinfo.display_name,
+        "models": {
+            "acoustic": sinfo.acoustic_model is not None,
+            "linguistic": sinfo.linguistic_model is not None,
+            "dur": sinfo.dur_model is not None,
+            "pitch": sinfo.pitch_model is not None,
+            "variance": sinfo.variance_model is not None,
+            "vocoder": sinfo.vocoder_model is not None,
+        },
+    }
+
+
 @app.get("/check_variance")
 async def check_variance(singer: str = ""):
     """检查端点是否可达"""
@@ -594,7 +646,6 @@ async def get_registry() -> dict:
     result = {
         "root_dir": str(registry.root_dir),
         "singers": {},
-        "dependencies": {},
     }
 
     for sname, sinfo in registry.singers.items():
@@ -661,17 +712,6 @@ async def get_registry() -> dict:
             singer_entry["models"]["vocoder"] = voc_entry
 
         result["singers"][sname] = singer_entry
-
-    for dname, dinfo in registry.dependencies.items():
-        dep_entry = {
-            "base_dir": str(dinfo.base_dir.relative_to(registry.root_dir)),
-            "models": [str(m.relative_path) for m in dinfo.models.values()],
-        }
-        if dinfo.config:
-            dep_entry["id"] = dinfo.config.id
-            dep_entry["version"] = dinfo.config.version
-            dep_entry["class"] = dinfo.config.class_name
-        result["dependencies"][dname] = dep_entry
 
     return result
 
@@ -785,8 +825,6 @@ def _log_inference_request(model_path: Path, body_inputs: dict, session_id: str 
         mtype = "Pitch"
     elif "/dsvariance/" in path_lower:
         mtype = "Variance"
-    elif "dependencies/" in path_lower:
-        mtype = "Dependency"
     else:
         mtype = "Acoustic"
 
@@ -1074,25 +1112,6 @@ async def inference_vocoder_batch(body: Dict, request: Request):
     return {"outputs": outputs, "count": len(segments)}
 
 
-@app.post("/inference_dependency")
-async def inference_dependency(body: Dict, request: Request):
-    """
-    依赖模块推理专用端点。
-
-    请求格式：
-      { "model_path": "...", "inputs": { ... } }
-    """
-    session_id = _get_session_id(request)
-    model_path = process_path(body["model_path"])
-    body_inputs = body.get("inputs", {})
-
-    _log_inference_request(model_path, body_inputs, session_id)
-
-    session = _load_onnx_session(model_path, session_id, model_type="dependency")
-    inputs = _prepare_onnx_inputs(session, body_inputs, session_id)
-    return _run_onnx_session(session, inputs)
-
-
 @app.post("/inference")
 async def inference(body: Dict, request: Request):
     """
@@ -1128,12 +1147,14 @@ async def inference(body: Dict, request: Request):
             session_id,
         )
 
-    model_type_str = "acoustic" if (model_info and model_info.model_type == ModelType.ACOUSTIC) else "dependency"
-    session = _load_onnx_session(model_path, session_id, model_type=model_type_str)
+    if not model_info or model_info.model_type != ModelType.ACOUSTIC:
+        raise HTTPException(
+            status_code=400,
+            detail="Generic remote inference only supports singer acoustic and vocoder models.",
+        )
 
-    if model_info and model_info.model_type == ModelType.ACOUSTIC:
-        _validate_acoustic_inputs(model_info, body_inputs, session, session_id)
-
+    session = _load_onnx_session(model_path, session_id, model_type="acoustic")
+    _validate_acoustic_inputs(model_info, body_inputs, session, session_id)
     inputs = _prepare_onnx_inputs(session, body_inputs, session_id)
     return _run_onnx_session(session, inputs)
 
@@ -1523,7 +1544,6 @@ async def rescan():
     return {
         "status": "ok",
         "singers": len(REGISTRY.singers),
-        "dependencies": len(REGISTRY.dependencies),
     }
 
 

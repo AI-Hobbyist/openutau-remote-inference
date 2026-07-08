@@ -4,7 +4,6 @@ model_registry.py — DiffSinger 模型注册与目录扫描
 自动发现并注册所有可用的 singer 声库和依赖模块。
 根据 OpenUtau_Models 的目录结构约定进行识别：
   Singers/{SingerName}-DiffSinger/{SingerName}/
-  Dependencies/{DepName}/
 """
 
 from __future__ import annotations
@@ -16,13 +15,11 @@ from typing import Dict, List, Optional, Tuple
 
 from lib.dsconfig_parser import (
     AcousticConfig,
-    DependencyConfig,
     ModelType,
     VocoderConfig,
     VarianceSubConfig,
     parse_model_config,
     parse_vocoder_config,
-    parse_dependency_config,
     parse_sub_model_config,
 )
 
@@ -72,20 +69,10 @@ class SingerInfo:
 
 
 @dataclass
-class DependencyInfo:
-    """依赖模块的注册信息"""
-    name: str
-    base_dir: Path
-    config: Optional[DependencyConfig] = None
-    models: Dict[str, OnnxModelInfo] = field(default_factory=dict)
-
-
-@dataclass
 class ModelRegistry:
     """全局模型注册表"""
     root_dir: Path
     singers: Dict[str, SingerInfo] = field(default_factory=dict)
-    dependencies: Dict[str, DependencyInfo] = field(default_factory=dict)
 
 
 # ====================================================================
@@ -101,19 +88,11 @@ def scan_singers(root_dir: Path) -> Dict[str, SingerInfo]:
         LOGGER.warning(f"Singers directory not found: {singers_dir}")
         return singers
 
-    for singer_folder in sorted(singers_dir.iterdir()):
-        if not singer_folder.is_dir():
-            continue
-
-        # 支持两种结构:
-        #   1) Singers/{SingerName}-DiffSinger/{SingerName}/   (OpenUtau 标准)
-        #   2) Singers/{SingerName}/                           (简化结构)
-        actual_singer_dir = _find_actual_singer_dir(singer_folder)
-        if actual_singer_dir is None:
-            continue
+    for actual_singer_dir in _iter_singer_dirs(singers_dir):
+        relative_display = actual_singer_dir.relative_to(singers_dir).as_posix()
 
         singer_name = actual_singer_dir.name
-        display_name = singer_folder.name
+        display_name = relative_display
 
         info = SingerInfo(
             name=singer_name,
@@ -145,7 +124,13 @@ def scan_singers(root_dir: Path) -> Dict[str, SingerInfo]:
         # 4. 扫描声码器
         _scan_vocoder(info, actual_singer_dir / "dsvocoder", root_dir)
 
-        singers[singer_name] = info
+        registry_key = singer_name
+        if registry_key in singers:
+            registry_key = relative_display
+            LOGGER.warning(
+                f"Duplicate singer name '{singer_name}', using registry key '{registry_key}'"
+            )
+        singers[registry_key] = info
         LOGGER.info(
             f"Registered singer '{display_name}': "
             f"acoustic={'✓' if info.acoustic_model else '✗'}, "
@@ -156,6 +141,20 @@ def scan_singers(root_dir: Path) -> Dict[str, SingerInfo]:
         )
 
     return singers
+
+
+def _iter_singer_dirs(folder: Path) -> List[Path]:
+    """递归扫描所有实际声库目录，支持 Singers/dir1/声库 等多层嵌套。"""
+    result: List[Path] = []
+    if not folder.exists() or not folder.is_dir():
+        return result
+    if _is_singer_dir(folder):
+        return [folder]
+    for child in sorted(folder.iterdir()):
+        if not child.is_dir() or child.name == "backup":
+            continue
+        result.extend(_iter_singer_dirs(child))
+    return result
 
 
 def _is_singer_dir(folder: Path) -> bool:
@@ -266,49 +265,6 @@ def _scan_vocoder(info: SingerInfo, vocoder_dir: Path, root_dir: Path):
 
 
 # ====================================================================
-# 依赖扫描
-# ====================================================================
-
-def scan_dependencies(root_dir: Path) -> Dict[str, DependencyInfo]:
-    """扫描 Dependencies/ 目录"""
-    dependencies: Dict[str, DependencyInfo] = {}
-    deps_dir = root_dir / "Dependencies"
-
-    if not deps_dir.exists():
-        LOGGER.warning(f"Dependencies directory not found: {deps_dir}")
-        return dependencies
-
-    for dep_folder in sorted(deps_dir.iterdir()):
-        if not dep_folder.is_dir():
-            continue
-
-        dep_config = parse_dependency_config(dep_folder)
-        dep_name = dep_folder.name
-        info = DependencyInfo(
-            name=dep_name,
-            base_dir=dep_folder,
-            config=dep_config,
-        )
-
-        # 注册目录下所有 ONNX
-        for f in dep_folder.glob("*.onnx"):
-            info.models[f.stem] = OnnxModelInfo(
-                model_type=ModelType.DEPENDENCY,
-                file_path=f.resolve(),
-                relative_path=str(f.relative_to(root_dir)),
-                config=dep_config,
-            )
-
-        dependencies[dep_name] = info
-        LOGGER.info(
-            f"Registered dependency '{dep_name}': "
-            f"{len(info.models)} ONNX model(s)"
-        )
-
-    return dependencies
-
-
-# ====================================================================
 # 查找 API
 # ====================================================================
 
@@ -319,15 +275,6 @@ def find_model_by_relative_path(
     """根据相对路径查找 ONNX 模型信息"""
     path = Path(relative_path)
     parts = path.parts
-
-    # 处理 Dependencies/xxx/xxx.onnx
-    if len(parts) >= 2 and parts[0] == "Dependencies":
-        dep_name = parts[1]
-        if dep_name in registry.dependencies:
-            for m in registry.dependencies[dep_name].models.values():
-                if m.file_path.name == path.name:
-                    return m
-        return None
 
     # 处理 Singers/xxx/.../xxx.onnx
     if len(parts) >= 2 and parts[0] == "Singers":
@@ -405,14 +352,12 @@ def scan_all(root_dir: Path) -> ModelRegistry:
     """扫描根目录下所有模型"""
     LOGGER.info(f"Scanning model registry at: {root_dir}")
     singers = scan_singers(root_dir)
-    dependencies = scan_dependencies(root_dir)
     registry = ModelRegistry(
         root_dir=root_dir,
         singers=singers,
-        dependencies=dependencies,
     )
     LOGGER.info(
         f"Registry scan complete: "
-        f"{len(singers)} singer(s), {len(dependencies)} dependencie(s)"
+        f"{len(singers)} singer(s)"
     )
     return registry
